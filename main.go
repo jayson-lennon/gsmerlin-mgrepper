@@ -20,6 +20,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -60,12 +61,13 @@ func collectStrings() {
 		time.Sleep(50 * time.Millisecond)
 		list = append(list, value)
 	}
-
-	results <- list
+	if len(list) > 0 {
+		results <- list
+	}
 }
 
 func parseFile(path, searchString string) {
-	wg.Add(1)
+	defer wg.Done()
 
 	fileData, err := os.ReadFile(path)
 	check(err)
@@ -82,25 +84,24 @@ func parseFile(path, searchString string) {
 		}
 	}
 
-	wg.Done()
 }
 
 func parseDir(path, searchString string) {
-	wg.Add(1)
 	defer wg.Done()
 
-	fmt.Println(path)
 	directoryList, err := os.ReadDir(path)
 	check(err)
 
 	for _, file := range directoryList {
 		fileInfo, err := file.Info()
 		check(err)
-		completePath := fmt.Sprintf("%v/%v", path, fileInfo.Name())
+		completePath := filepath.Join(path, fileInfo.Name())
 		if file.IsDir() {
+			wg.Add(1)
 			go parseDir(completePath, searchString)
 			continue
 		}
+		wg.Add(1)
 		go parseFile(completePath, searchString)
 	}
 
@@ -112,6 +113,7 @@ func main() {
 	searchString := os.Args[1]
 	searchDir := os.Args[2]
 
+	wg.Add(1)
 	go parseDir(searchDir, searchString)
 
 	wg.Wait()
