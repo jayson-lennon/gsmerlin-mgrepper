@@ -33,6 +33,9 @@ type FoundString struct {
 
 var wg sync.WaitGroup
 var found = make(chan FoundString)
+
+// set the capacity to 1 so we can write the results
+// to the channel without having a reader on the other end
 var results = make(chan []FoundString, 1)
 var errors = make(chan error)
 
