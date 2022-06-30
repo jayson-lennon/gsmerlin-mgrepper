@@ -23,7 +23,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 )
 
 type FoundString struct {
@@ -34,7 +33,7 @@ type FoundString struct {
 
 var wg sync.WaitGroup
 var found = make(chan FoundString)
-var results = make(chan []FoundString)
+var results = make(chan []FoundString, 1)
 var errors = make(chan error)
 
 func check(e error) {
@@ -51,16 +50,26 @@ func (fs FoundString) String() string {
 	return result
 }
 
-func collectStrings() {
+func collectStrings(lock *sync.Mutex) {
+	defer lock.Unlock()
+
+	// As long as this goroutine is running, we want the lock to be held.
+	// This will be used later
+	lock.Lock()
+
 	var list []FoundString
 	for {
 		value, ok := <-found
 		if !ok {
+			// main thread closes channel indicating that search is complete
 			break
 		}
-		time.Sleep(50 * time.Millisecond)
+		// sleep isn't needed
+		// time.Sleep(50 * time.Millisecond)
 		list = append(list, value)
 	}
+
+	// once we break from the above loop, we send the results on the channel
 	if len(list) > 0 {
 		results <- list
 	}
@@ -108,8 +117,15 @@ func parseDir(path, searchString string) {
 }
 
 func main() {
+	// Lock is used for the collectStrings goroutine. As long as the
+	// goroutine is running, then the lock will be taken. When the
+	// lock is released, then this is an indication that the results
+	// have been compiled properly, and they can be read frmo the channel.
+	var resultsLock = sync.Mutex{}
+
 	// Fire service for collecting results
-	go collectStrings()
+	go collectStrings(&resultsLock)
+
 	searchString := os.Args[1]
 	searchDir := os.Args[2]
 
@@ -117,10 +133,31 @@ func main() {
 	go parseDir(searchDir, searchString)
 
 	wg.Wait()
+
+	// The moment we close the channel, the main thread continues.
+	// In the previous version, this resulted in a deadlock when no results
+	// were found because it was using a blocking read from the channel.
 	close(found)
-	hits := <-results
-	for _, hit := range hits {
-		fmt.Println(hit)
+
+	// To alleviate the issue noted above, we try to take out the lock
+	// which is being used by the `collection` goroutine. As long as the
+	// `collection` goroutine is running, our execution will block here
+	// until the goroutine finishes and unlocks.
+	resultsLock.Lock()
+
+	// Now that the `collection` goroutine is done, we can do a non-blocking
+	// read on the channel:
+
+	select {
+	// We needed to wait using the lock above because if we didn't wait,
+	// this channel read would always come back as "empty" and trigger the default
+	// thereby discarding results. This is because it takes the `collection`
+	// goroutine time to gather the results into a slice.
+	case hits := <-results:
+		fmt.Println(hits)
+	// If there are no results, then we just break and the program is done.
+	default:
+		break
 	}
 
 }
